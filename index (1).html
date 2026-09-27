@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Золотое сечение — анализ аудио</title>
+<style>
+body{font-family:Arial,sans-serif;max-width:820px;margin:0 auto;padding:28px 18px;background:#f6f6f4;color:#171717}h1{margin-bottom:8px}p{line-height:1.5}.card{background:white;border-radius:18px;padding:24px;box-shadow:0 4px 18px #00000012;margin-top:18px}input[type=file]{width:100%;padding:14px;border:1px dashed #888;border-radius:12px;box-sizing:border-box}.btn{margin-top:14px;padding:12px 18px;border:0;border-radius:10px;cursor:pointer;background:#171717;color:#fff;font-size:16px}.btn:disabled{opacity:.55;cursor:wait}.result{margin-top:20px;display:none}.formula{font-family:Georgia,serif;font-size:20px;background:#f3f3f0;padding:16px;border-radius:12px;overflow:auto}.row{display:flex;justify-content:space-between;gap:20px;border-bottom:1px solid #eee;padding:10px 0}.label{color:#666}.value{font-weight:700;text-align:right}.note{font-size:13px;color:#666}.error{color:#a00}.section{margin-top:22px;font-weight:700;font-size:18px}.badge{display:inline-block;padding:5px 9px;border-radius:8px;background:#f0f0ed;font-size:13px}.table{width:100%;border-collapse:collapse;margin-top:10px;font-size:14px}.table th,.table td{padding:8px;border-bottom:1px solid #eee;text-align:right}.table th:first-child,.table td:first-child{text-align:left}.small{font-size:12px;color:#666}.highlight{font-size:17px}.warning{padding:12px;border-radius:10px;background:#faf7e8;margin-top:12px}.success{padding:12px;border-radius:10px;background:#eef7ee;margin-top:12px}
+</style>
+</head>
+<body>
+<h1>Анализ золотого сечения</h1>
+<p>Загрузите MP3, WAV, M4A или другой формат, поддерживаемый браузером. Анализ выполняется локально на вашем устройстве.</p>
+<div class="card">
+<input id="file" type="file" accept="audio/*">
+<button class="btn" id="analyze">Анализировать</button>
+<div id="status" class="note"></div>
+<div id="result" class="result"></div>
+</div>
+<script>
+const PHI=0.618;
+const fileInput=document.getElementById('file'), btn=document.getElementById('analyze'), status=document.getElementById('status'), result=document.getElementById('result');
+function fmtTime(s){const m=Math.floor(s/60), sec=s-m*60; return `${m}:${sec.toFixed(2).padStart(5,'0')}`}
+function fmtNum(x,d=4){return Number(x).toFixed(d)}
+function esc(s){return s.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function percentile(a,p){if(!a.length)return 0;const b=[...a].sort((x,y)=>x-y),x=(b.length-1)*p,i=Math.floor(x),f=x-i;return b[i]+(b[i+1]!==undefined?(b[i+1]-b[i])*f:0)}
+function median(a){return percentile(a,.5)}
+function randomControl(eventCount, trials=20000){
+  if(!eventCount)return {p:1,median:1};
+  const mins=[];
+  for(let j=0;j<trials;j++){
+    let md=1;
+    for(let i=0;i<eventCount;i++){
+      const r=Math.random();
+      const d=Math.abs(r-PHI);
+      if(d<md)md=d;
+    }
+    mins.push(md);
+  }
+  mins.sort((a,b)=>a-b);
+  return {p:null,median:median(mins),q05:percentile(mins,.05),q95:percentile(mins,.95)};
+}
+function chanceWithinD(d,n){
+  const interval=Math.min(1,2*d);
+  return 1-Math.pow(1-interval,n);
+}
+async function analyze(){
+ const file=fileInput.files[0]; if(!file){status.textContent='Выберите аудиофайл.';return}
+ btn.disabled=true; result.style.display='none'; status.textContent='Читаю аудио и анализирую музыкальные события…';
+ try{
+  const arr=await file.arrayBuffer(); const ctx=new (window.AudioContext||window.webkitAudioContext)();
+  const audio=await ctx.decodeAudioData(arr); const T=audio.duration; const gold=T*PHI;
+  const ch=audio.numberOfChannels, n=audio.length, sr=audio.sampleRate;
+  // 100-ms frames. We use an energy envelope plus a novelty/onset-like measure.
+  const frame=Math.max(1024,Math.floor(sr*0.10)), hop=frame;
+  const frames=[];
+  const channels=[]; for(let c=0;c<ch;c++) channels.push(audio.getChannelData(c));
+  for(let start=0; start+frame<=n; start+=hop){
+    let sum=0;
+    for(let c=0;c<ch;c++){
+      const data=channels[c];
+      for(let i=start;i<start+frame;i+=2){const v=data[i]; sum+=v*v;}
+    }
+    frames.push(Math.sqrt(sum/((frame/2)*ch)));
+  }
+  // Normalize energy in dB-ish scale to reduce the influence of mastering loudness.
+  const eps=1e-8, db=frames.map(x=>20*Math.log10(x+eps));
+  const smooth=[], w=4;
+  for(let i=0;i<db.length;i++){let s=0,k=0;for(let j=Math.max(0,i-w);j<=Math.min(db.length-1,i+w);j++){s+=db[j];k++}smooth.push(s/k)}
+  const novelty=[];
+  for(let i=0;i<smooth.length;i++) novelty.push(i?smooth[i]-smooth[i-1]:0);
+  const novSmooth=[];
+  for(let i=0;i<novelty.length;i++){let s=0,k=0;for(let j=Math.max(0,i-2);j<=Math.min(novelty.length-1,i+2);j++){s+=novelty[j];k++}novSmooth.push(s/k)}
+  const absNov=novSmooth.map(x=>Math.max(0,x));
+  const novBase=median(absNov), novScale=Math.max(percentile(absNov,.90)-novBase,.1);
+  const energyBase=percentile(smooth,.35), energyScale=Math.max(percentile(smooth,.90)-energyBase,1);
+  const raw=[];
+  for(let i=2;i<smooth.length-2;i++){
+    if(smooth[i]>=smooth[i-1]&&smooth[i]>=smooth[i+1]){
+      const energyScore=Math.max(0,Math.min(1,(smooth[i]-energyBase)/energyScale));
+      const noveltyScore=Math.max(0,Math.min(1,(absNov[i]-novBase)/novScale));
+      const localRise=Math.max(0,smooth[i]-smooth[i-2])/Math.max(energyScale,1);
+      const score=.50*energyScore+.35*noveltyScore+.15*Math.min(1,localRise);
+      const t=(i*hop+frame/2)/sr, r=t/T;
+      if(r>=.05&&r<=.95&&score>.12) raw.push({i,t,score});
+    }
+  }
+  // Cluster peaks within 4 seconds: one musical event may create several nearby acoustic peaks.
+  raw.sort((a,b)=>a.t-b.t);
+  const clusters=[]; const gap=4;
+  for(const p of raw){let c=clusters[clusters.length-1]; if(!c||p.t-c[c.length-1].t>gap)clusters.push([p]); else c.push(p)}
+  const events=clusters.map(c=>c.reduce((best,x)=>x.score>best.score?x:best,c[0]));
+  events.sort((a,b)=>b.score-a.score);
+  // Keep meaningful events. A maximum of 20 prevents dense passages from dominating the test.
+  const kept=events.slice(0,20).sort((a,b)=>a.t-b.t);
+  // Main candidate: strongest event, not simply the closest one.
+  const main=kept.length?kept.reduce((a,b)=>b.score>a.score?b:a):{t:gold,score:0};
+  // Nearest significant event to the golden point.
+  const nearest=kept.length?kept.reduce((a,b)=>Math.abs(b.t-gold)<Math.abs(a.t-gold)?b:a):main;
+  const Dmain=Math.abs(main.t/T-PHI), Dnear=Math.abs(nearest.t/T-PHI), deltaNear=Math.abs(nearest.t-gold);
+  const chance=chanceWithinD(Dnear,kept.length);
+  const sim=randomControl(kept.length,10000);
+  const interpretation=Dpct=>Dpct<.5?'очень близко':Dpct<2?'близко':Dpct<5?'умеренное отклонение':'далеко';
+  const rows=kept.map((e,i)=>{const d=Math.abs(e.t/T-PHI);return `<tr><td>${i+1}</td><td>${fmtTime(e.t)}</td><td>${fmtNum(e.t/T,5)}</td><td>${fmtNum(d,5)}</td><td>${fmtNum(d*100,2)} п.п.</td></tr>`}).join('');
+  result.innerHTML=`
+    <div class="row"><span class="label">Файл</span><span class="value">${esc(file.name)}</span></div>
+    <div class="row"><span class="label">Общая длительность T</span><span class="value">${fmtTime(T)} (${fmtNum(T,3)} с)</span></div>
+    <div class="row"><span class="label">Золотая точка 0,618T</span><span class="value">${fmtTime(gold)} (${fmtNum(gold,3)} с)</span></div>
+    <div class="section">Основная кульминация / сильнейшее событие</div>
+    <div class="row"><span class="label">t</span><span class="value">${fmtTime(main.t)} (${fmtNum(main.t,3)} с)</span></div>
+    <div class="formula">D = |t/T − 0,618| = |${fmtNum(main.t/T,6)} − 0,618| = <b>${fmtNum(Dmain,6)}</b></div>
+    <div class="row"><span class="label">Отклонение</span><span class="value">${fmtNum(Dmain*100,3)} п.п.</span></div>
+    <div class="section">Ближайшее значимое событие к золотой точке</div>
+    <div class="row"><span class="label">t</span><span class="value">${fmtTime(nearest.t)} (${fmtNum(nearest.t,3)} с)</span></div>
+    <div class="formula">D = |t/T − 0,618| = |${fmtNum(nearest.t/T,6)} − 0,618| = <b>${fmtNum(Dnear,6)}</b></div>
+    <div class="row"><span class="label">Отклонение</span><span class="value">${fmtNum(Dnear*100,3)} п.п.</span></div>
+    <div class="row"><span class="label">Разница во времени</span><span class="value">${fmtNum(deltaNear,3)} с</span></div>
+    <div class="${Dnear<.05?'success':'warning'}"><b>Вывод:</b> ближайшее значимое событие находится ${interpretation(Dnear*100)} от золотой точки.</div>
+    <div class="section">Контрольная случайная модель</div>
+    <p class="note">В анализе найдено <b>${kept.length}</b> значимых событий. Если ${kept.length} событий разместить случайно по длительности трека, вероятность получить хотя бы одно событие не дальше чем на <b>D=${fmtNum(Dnear,4)}</b> от 0,618 составляет примерно <b>${fmtNum(chance*100,2)}%</b>.</p>
+    <p class="note">В 10 000 случайных симуляций медианное минимальное отклонение составило ${fmtNum(sim.median,4)}, а 90% результатов лежали примерно между ${fmtNum(sim.q05,4)} и ${fmtNum(sim.q95,4)}.</p>
+    <div class="section">Все найденные события</div>
+    <table class="table"><thead><tr><th>#</th><th>Время</th><th>t/T</th><th>D</th><th>Отклонение</th></tr></thead><tbody>${rows||'<tr><td colspan="5">События не найдены</td></tr>'}</tbody></table>
+    <p class="note">Метод ищет устойчивые акустические события по изменению энергии и onset-подобной новизне сигнала, затем объединяет близкие пики. Это статистический акустический анализ, а не доказательство того, что композитор сознательно использовал золотое сечение.</p>`;
+  result.style.display='block'; status.textContent='Готово.'; await ctx.close();
+ }catch(e){status.innerHTML='<span class="error">Не удалось декодировать файл. Попробуйте MP3 или WAV.</span>'; console.error(e)} finally{btn.disabled=false}
+}
+btn.onclick=analyze;
+</script>
+</body></html>
